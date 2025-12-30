@@ -1,0 +1,22 @@
+# Python虚拟环境 
+venv/ 
+backend/venv/ 
+__pycache__/ 
+*.pyc 
+ECHO 处于打开状态。
+# Node.js 
+node_modules/ 
+frontend/node_modules/ 
+frontend/.next/ 
+ECHO 处于打开状态。
+# 项目文件 
+vectorstore/ 
+*.db 
+*.sqlite3 
+ECHO 处于打开状态。
+# 环境变量 
+*.env 
+ECHO 处于打开状态。
+# 系统文件 
+.DS_Store 
+Thumbs.db 
