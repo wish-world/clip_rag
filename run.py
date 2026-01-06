@@ -2,7 +2,7 @@ import subprocess
 import time
 import os
 
-print("启动CLIP RAG系统...")
+print("启动CLIP RAG多模态系统...")
 
 # 启动后端
 print("1. 启动后端服务器...")
@@ -11,17 +11,25 @@ time.sleep(3)
 
 # 启动前端
 print("2. 启动前端界面...")
-subprocess.Popen('start cmd /k "cd frontend && pnpm dev"', shell=True)
+# subprocess.Popen('start cmd /k "cd frontend && pnpm dev"', shell=True)
+# time.sleep(5)
+
+subprocess.Popen(r'start cmd /k "cd frontend\public && python -m http.server 8080"', shell=True)
 time.sleep(5)
+
 
 # 打开浏览器
 print("3. 打开浏览器...")
-os.system('start http://localhost:3000')
+# os.system('start http://localhost:3000')
 os.system('start http://localhost:8000/docs')
+os.system('start http://localhost:8080')
 
-print("\n✅ 启动完成!")
+
+print("\n✅ 多模态RAG系统启动完成!")
 print("前端: http://localhost:3000")
+print("前端: http://localhost:8080")
 print("后端: http://localhost:8000")
 print("API文档: http://localhost:8000/docs")
+print("多模态上传: POST /multimodal/upload")
 print("\n按回车键退出...")
 input()

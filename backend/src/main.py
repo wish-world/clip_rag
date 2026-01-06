@@ -1,4 +1,4 @@
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
@@ -34,38 +34,43 @@ async def lifespan(app: FastAPI):
     print("启动CLIP RAG API服务...")
     
     try:
-        # 先尝试直接导入
-        from vector_store import VectorStoreManager
-        from rag_graph import RAGGraph
+        from vector_store import MultiModalVectorStoreManager
+        from rag_graph import MultiModalRAGGraph
         print("✓ 使用直接导入成功")
     except ImportError as e1:
         try:
-            # 再尝试相对导入
-            from .vector_store import VectorStoreManager
-            from .rag_graph import RAGGraph
+            from .vector_store import MultiModalVectorStoreManager
+            from .rag_graph import MultiModalRAGGraph
             print("✓ 使用相对导入成功")
         except ImportError as e2:
-            print(f"✗ 导入失败:")
+            print(f"✗✗✗✗ 导入失败:")
             print(f"  直接导入错误: {e1}")
             print(f"  相对导入错误: {e2}")
             print("当前目录文件:", [f for f in os.listdir(current_dir) if f.endswith('.py')])
             yield
             return
     
-    print("初始化向量存储管理器...")
-    vector_manager = VectorStoreManager()
+    print("初始化多模态向量存储管理器...")
+    vector_manager = MultiModalVectorStoreManager()
     
     print("初始化向量存储...")
     is_initialized = vector_manager.initialize_vectorstore()
     
-    if is_initialized and vector_manager.vectorstore:
-        print("初始化RAG图...")
+    if is_initialized:
+        print("初始化多模态RAG图...")
         try:
             retriever = vector_manager.as_retriever()
-            rag_graph = RAGGraph(retriever)
-            print("✓ RAG服务初始化完成")
+            rag_graph = MultiModalRAGGraph(retriever)
+            print("✓ 多模态RAG服务初始化完成")
+            
+            # 打印状态
+            status = vector_manager.get_status()
+            print(f"  文本文档数: {status['text_document_count']}")
+            print(f"  图像文档数: {status['image_document_count']}")
+            print(f"  多模态支持: {status['multimodal_enabled']}")
+            
         except Exception as e:
-            print(f"✗ 初始化RAG图失败: {e}")
+            print(f"✗✗✗✗ 初始化RAG图失败: {e}")
             rag_graph = None
     else:
         print("⚠ 向量存储未初始化，RAG服务将不可用")
@@ -101,9 +106,17 @@ class ChatResponse(BaseModel):
 class StatusResponse(BaseModel):
     vectorstore_initialized: bool
     rag_graph_initialized: bool
+    multimodal_enabled: bool
+    text_document_count: int
+    image_document_count: int
     message: str
     vectorstore_path: Optional[str]
-    document_count: Optional[int]
+
+class MultimodalUploadResponse(BaseModel):
+    success: bool
+    message: str
+    document_count: int
+    image_count: int
 
 # ========== LangGraph兼容接口 ==========
 
@@ -144,7 +157,7 @@ async def get_assistant(assistant_id: str):
         "updated_at": datetime.now().isoformat(),
         "created_at": datetime.now().isoformat(),
         "name": "CLIP RAG Assistant",
-        "description": "基于DeepSeek的RAG文档助手"
+        "description": "基于DeepSeek的多模态RAG文档助手"
     }
 
 @app.post("/threads")
@@ -195,7 +208,7 @@ async def create_thread_run_stream(thread_id: str, request: dict):
     
     if not rag_graph:
         error_msg = "RAG服务未初始化。请先初始化向量存储。"
-        print(f"✗ {error_msg}")
+        print(f"✗✗✗✗ {error_msg}")
         raise HTTPException(status_code=503, detail=error_msg)
     
     # 解析请求消息
@@ -239,22 +252,22 @@ async def create_thread_run_stream(thread_id: str, request: dict):
     
     if not last_user_message:
         error_msg = "未找到有效的用户消息"
-        print(f"✗ {error_msg}")
-        print(f"✗ 可用消息: {messages}")
+        print(f"✗✗✗✗ {error_msg}")
+        print(f"✗✗✗✗ 可用消息: {messages}")
         raise HTTPException(status_code=400, detail=error_msg)
     
     print(f"✓ 用户消息: {last_user_message[:100]}...")
     
     # 获取回答
     try:
-        print("⏳ 正在生成回答...")
+        print("⏳⏳⏳⏳⏳⏳⏳⏳⏳ 正在生成回答...")
         start_time = time.time()
         answer = await rag_graph.ainvoke(last_user_message)
         elapsed = time.time() - start_time
         print(f"✓ 生成回答成功 (耗时: {elapsed:.2f}秒, 长度: {len(answer)} 字符)")
     except Exception as e:
         error_msg = f"生成回答出错: {str(e)}"
-        print(f"✗ {error_msg}")
+        print(f"✗✗✗✗ {error_msg}")
         import traceback
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=error_msg)
@@ -276,8 +289,6 @@ async def create_thread_run_stream(thread_id: str, request: dict):
     
     async def generate_compatible_sse():
         """生成完全兼容Agent Chat UI的SSE事件流"""
-        
-        # 关键：Agent Chat UI期望的事件序列和格式
         
         # 1. 运行开始事件
         run_start_event = {
@@ -335,7 +346,6 @@ async def create_thread_run_stream(thread_id: str, request: dict):
         await asyncio.sleep(0.001)
         
         # 4. 关键修复：使用on_chain_stream事件，发送累积内容
-        # Agent Chat UI期望on_chain_stream而不是on_chat_model_stream
         accumulated_content = ""
         
         # 分块发送，每次发送几个字符，模拟打字效果
@@ -345,7 +355,6 @@ async def create_thread_run_stream(thread_id: str, request: dict):
         for i, chunk in enumerate(chunks):
             accumulated_content += chunk
             
-            # 关键：使用on_chain_stream事件，包含完整的消息对象
             stream_event = {
                 "event": "on_chain_stream",
                 "run_id": run_id,
@@ -466,7 +475,7 @@ async def create_thread_run_stream(thread_id: str, request: dict):
         }
         yield f"data: {json.dumps(run_end_event, ensure_ascii=False)}\n\n"
         
-        # 8. 发送空对象表示流结束（Agent Chat UI的关键要求）
+        # 8. 发送空对象表示流结束
         yield "data: {}\n\n"
     
     # 保存消息到线程存储
@@ -524,7 +533,7 @@ async def get_thread_history(thread_id: str, request: dict = None):
     print(f"请求时间: {datetime.now().strftime('%H:%M:%S')}")
     
     if thread_id not in threads_store:
-        print(f"✗ 线程不存在: {thread_id}")
+        print(f"✗✗✗✗ 线程不存在: {thread_id}")
         raise HTTPException(status_code=404, detail="Thread not found")
     
     thread = threads_store[thread_id]
@@ -536,7 +545,6 @@ async def get_thread_history(thread_id: str, request: dict = None):
         if not isinstance(msg, dict):
             continue
         
-        # 确保每条消息都有必需字段
         standardized_msg = {
             "type": msg.get("type", "human" if msg.get("role") == "user" else "ai"),
             "content": msg.get("content", ""),
@@ -560,13 +568,72 @@ async def get_thread_history_get(thread_id: str):
     """GET方法获取线程历史记录"""
     return await get_thread_history(thread_id, None)
 
+# ========== 多模态上传接口 ==========
+
+@app.post("/multimodal/upload")
+async def upload_multimodal_document(file: UploadFile = File(...)):
+    """上传多模态文档（PDF或图像）"""
+    if not vector_manager:
+        raise HTTPException(status_code=503, detail="向量存储未初始化")
+    
+    # 检查文件类型
+    allowed_extensions = {'.pdf', '.jpg', '.jpeg', '.png', '.bmp', '.tiff'}
+    file_extension = os.path.splitext(file.filename)[1].lower()
+    
+    if file_extension not in allowed_extensions:
+        raise HTTPException(status_code=400, detail="不支持的文件类型")
+    
+    # 保存文件到临时目录
+    temp_dir = os.path.join(current_dir, "temp_uploads")
+    os.makedirs(temp_dir, exist_ok=True)
+    
+    file_path = os.path.join(temp_dir, file.filename)
+    
+    try:
+        # 保存上传的文件
+        contents = await file.read()
+        with open(file_path, "wb") as f:
+            f.write(contents)
+        
+        # 处理文档
+        from document_processor import MultiModalDocumentProcessor
+        processor = MultiModalDocumentProcessor()
+        
+        documents = []
+        if file_extension == '.pdf':
+            documents = processor._load_pdf_with_images(file_path, file.filename)
+        else:
+            documents = processor._load_image_file(file_path, file.filename)
+        
+        # 添加到向量存储（这里需要实现增量添加功能，简化处理）
+        # 实际应用中可能需要更复杂的逻辑来处理增量添加
+        print(f"✓ 上传成功: {file.filename}, 文档数: {len(documents)}")
+        
+        # 清理临时文件
+        os.remove(file_path)
+        
+        return MultimodalUploadResponse(
+            success=True,
+            message=f"成功上传并处理 {file.filename}",
+            document_count=len(documents),
+            image_count=len([d for d in documents if d.metadata.get('type') == 'image'])
+        )
+        
+    except Exception as e:
+        # 清理临时文件
+        if os.path.exists(file_path):
+            os.remove(file_path)
+        
+        logger.error(f"上传处理失败: {e}")
+        raise HTTPException(status_code=500, detail=f"处理文件失败: {str(e)}")
+
 # ========== 测试和调试端点 ==========
 
 @app.get("/test-sse")
 async def test_sse():
     """测试SSE流端点"""
     async def test_stream():
-        test_message = "这是一个测试响应，用于验证SSE流是否正常工作。"
+        test_message = "这是一个多模态RAG测试响应，用于验证SSE流是否正常工作。"
         
         # 运行开始
         yield f"data: {json.dumps({'event': 'on_run_start', 'run_id': 'test_run', 'name': 'test'})}\n\n"
@@ -639,36 +706,24 @@ async def test_sse():
     
     return StreamingResponse(test_stream(), media_type="text/event-stream", headers=headers)
 
-@app.get("/test-simple")
-async def test_simple():
-    """最简单的测试端点"""
-    async def simple_stream():
-        yield "data: 这是一条测试消息\n\n"
-        yield "data: 这是第二条消息\n\n"
-        yield "data: 这是最后一条消息\n\n"
-        yield "data: {}\n\n"
-    
-    headers = {
-        "Cache-Control": "no-cache",
-        "Connection": "keep-alive",
-        "Content-Type": "text/event-stream; charset=utf-8",
-        "X-Accel-Buffering": "no"
-    }
-    
-    return StreamingResponse(simple_stream(), media_type="text/event-stream", headers=headers)
-
 # ========== 原有接口 ==========
 
 @app.get("/")
 async def root():
+    status = vector_manager.get_status() if vector_manager else {}
     return {
         "message": "CLIP RAG API 服务运行中", 
         "status": "healthy",
         "timestamp": datetime.now().isoformat(),
+        "multimodal_enabled": status.get('multimodal_enabled', False),
+        "text_documents": status.get('text_document_count', 0),
+        "image_documents": status.get('image_document_count', 0),
         "endpoints": {
             "测试端点": {
-                "test_sse": "GET /test-sse",
-                "test_simple": "GET /test-simple"
+                "test_sse": "GET /test-sse"
+            },
+            "多模态接口": {
+                "upload": "POST /multimodal/upload"
             },
             "LangGraph接口": {
                 "info": "GET /info",
@@ -725,8 +780,21 @@ async def chat_endpoint(request: ChatRequest):
 @app.get("/status", response_model=StatusResponse)
 async def get_status():
     """获取服务状态"""
-    vectorstore_initialized = vector_manager.vectorstore is not None if vector_manager else False
-    rag_graph_initialized = rag_graph is not None
+    if vector_manager:
+        status = vector_manager.get_status()
+        vectorstore_initialized = status['text_initialized'] or status['image_initialized']
+        rag_graph_initialized = rag_graph is not None
+        multimodal_enabled = status['multimodal_enabled']
+        text_document_count = status['text_document_count']
+        image_document_count = status['image_document_count']
+        vectorstore_path = status['vectorstore_path']
+    else:
+        vectorstore_initialized = False
+        rag_graph_initialized = False
+        multimodal_enabled = False
+        text_document_count = 0
+        image_document_count = 0
+        vectorstore_path = None
     
     message = "服务运行正常"
     if not vectorstore_initialized:
@@ -734,32 +802,103 @@ async def get_status():
     elif not rag_graph_initialized:
         message = "RAG图未初始化"
     
-    document_count = None
-    if vector_manager and vector_manager.vectorstore:
-        try:
-            document_count = vector_manager.vectorstore._collection.count()
-        except:
-            pass
-    
     return {
         "vectorstore_initialized": vectorstore_initialized,
         "rag_graph_initialized": rag_graph_initialized,
+        "multimodal_enabled": multimodal_enabled,
+        "text_document_count": text_document_count,
+        "image_document_count": image_document_count,
         "message": message,
-        "vectorstore_path": vector_manager.vectorstore_dir if vector_manager else None,
-        "document_count": document_count
+        "vectorstore_path": vectorstore_path
     }
+
+@app.post("/retrieve")
+async def retrieve_documents(query: str, k: int = 4):
+    """直接检索文档端点（用于调试）"""
+    if not vector_manager:
+        raise HTTPException(status_code=503, detail="向量存储未初始化")
+    
+    try:
+        docs = vector_manager.similarity_search(query, k=k)
+        
+        results = []
+        for i, doc in enumerate(docs):
+            doc_type = doc.metadata.get('type', 'text')
+            results.append({
+                "rank": i + 1,
+                "type": doc_type,
+                "content": doc.page_content[:200] + "..." if len(doc.page_content) > 200 else doc.page_content,
+                "metadata": doc.metadata
+            })
+        
+        return {
+            "query": query,
+            "results": results,
+            "total": len(docs)
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"检索失败: {str(e)}")
+
+@app.get("/debug/vectorstore")
+async def debug_vectorstore():
+    """调试向量存储状态"""
+    if not vector_manager:
+        return {"error": "向量存储管理器未初始化"}
+    
+    status = vector_manager.get_status()
+    
+    # 尝试获取一些样本数据
+    sample_docs = []
+    try:
+        sample_docs = vector_manager.similarity_search("测试", k=2)
+    except Exception as e:
+        sample_docs = [{"error": str(e)}]
+    
+    return {
+        "status": status,
+        "sample_query_results": [
+            {
+                "content": doc.page_content[:100] + "..." if len(doc.page_content) > 100 else doc.page_content,
+                "metadata": {k: v for k, v in doc.metadata.items() if not isinstance(v, (list, dict))}
+            } for doc in sample_docs
+        ]
+    }
+
+@app.post("/reinitialize")
+async def reinitialize_vectorstore():
+    """重新初始化向量存储"""
+    global vector_manager, rag_graph
+    
+    try:
+        from vector_store import MultiModalVectorStoreManager
+        from rag_graph import MultiModalRAGGraph
+        
+        print("重新初始化向量存储...")
+        vector_manager = MultiModalVectorStoreManager()
+        is_initialized = vector_manager.initialize_vectorstore()
+        
+        if is_initialized:
+            retriever = vector_manager.as_retriever()
+            rag_graph = MultiModalRAGGraph(retriever)
+            return {"success": True, "message": "向量存储重新初始化成功"}
+        else:
+            return {"success": False, "message": "向量存储重新初始化失败"}
+            
+    except Exception as e:
+        return {"success": False, "message": f"重新初始化失败: {str(e)}"}
 
 if __name__ == "__main__":
     # 运行应用
     print("\n" + "="*60)
-    print("CLIP RAG 服务器启动")
+    print("CLIP RAG 多模态服务器启动")
     print("="*60)
     print(f"工作目录: {os.getcwd()}")
     print(f"API地址: http://localhost:8000")
     print(f"API文档: http://localhost:8000/docs")
-    print(f"测试端点:")
-    print(f"  - http://localhost:8000/test-sse")
-    print(f"  - http://localhost:8000/test-simple")
+    print(f"健康检查: http://localhost:8000/health")
+    print(f"状态检查: http://localhost:8000/status")
+    print(f"多模态上传: POST /multimodal/upload")
+    print(f"LangGraph信息: http://localhost:8000/info")
     print("="*60)
     
     uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True)
